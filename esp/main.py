@@ -4,13 +4,13 @@ import time
 
 # Pin Konfiguration
 # Hauptampel (Fußgänger)
-PIN_MAIN_RED = 16
-PIN_MAIN_GREEN = 17
+PIN_MAIN_RED = 13
+PIN_MAIN_GREEN = 32
 
 # Autoampel (Invertiert/Neben)
-PIN_CAR_RED = 5
-PIN_CAR_YELLOW = 18
-PIN_CAR_GREEN = 19
+PIN_CAR_RED = 12
+PIN_CAR_YELLOW = 26
+PIN_CAR_GREEN = 33
 
 led_main_red = Pin(PIN_MAIN_RED, Pin.OUT)
 led_main_green = Pin(PIN_MAIN_GREEN, Pin.OUT)
