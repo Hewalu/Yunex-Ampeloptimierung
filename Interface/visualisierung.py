@@ -439,8 +439,9 @@ def main():
         # Update senden / Empfangen
         if ESP_AVAILABLE and esp:
             # 1. Bildschirminhalt an ESP senden (Licht)
+            # Sende Update bei Änderung ODER alle 2 Sekunden (Heartbeat/Sync)
             current_values = (p_red, p_green, c_red, c_yellow, c_green)
-            if current_values != last_esp_values:
+            if current_values != last_esp_values or (now % 2000 < dt):
                 esp.update_leds(*current_values)
                 last_esp_values = current_values
 
