@@ -8,7 +8,7 @@ from ultralytics import YOLO
 # Konfiguration
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
-MODEL_NAME = "yolo26s-seg.pt"
+MODEL_NAME = "yolo26n-seg.pt"
 
 DEBOUNCE_TIME = 0.25  # Reduziert auf 0.25 Sekunden
 

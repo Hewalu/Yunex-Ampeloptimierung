@@ -61,9 +61,15 @@ SECONDS_PER_LED_GREEN_SLOW = 0.5    # Langsames Ablaufen (Taste)
 
 # 4. FESTE PHASEN (in Millisekunden)
 TIME_SAFETY_PRE_GREEN = 3000  # Puffer bevor Fußgänger Grün bekommen (Alle Rot)
-TIME_CLEARANCE = 10000  # Räumzeit am Ende
+TIME_CLEARANCE = 11000  # Räumzeit am Ende
 TIME_CAR_YELLOW = 3000  # Wie lange Autos Gelb haben vor Rot
 TIME_CAR_RED_YELLOW = 1500  # Wie lange Autos Rot-Gelb haben vor Grün
+
+# Tram Zeiten
+TIME_TRAM_PRE_GREEN = 5000     # 5s "Safety" (3s Gelb + 2s Buffer)
+TIME_TRAM_GREEN_DURATION = 25000  # 25s Grünphase bei Tram
+TIME_TRAM_YELLOW = 3000
+TIME_TRAM_SAFETY = 2000
 
 # Basis-Dauer Rotphase berechnen
 DURATION_RED_BASE_MS = int(TOTAL_LEDS_RED * SECONDS_PER_LED_RED * 1000)
@@ -135,7 +141,8 @@ def load_images():
     images['red_off'] = load_and_scale_image(os.path.join(asset_dir, 'mann_rot_aus.png'))
     images['green_on'] = load_and_scale_image(os.path.join(asset_dir, 'mann_gruen_an.png'))
     images['green_off'] = load_and_scale_image(os.path.join(asset_dir, 'mann_gruen_aus.png'))
-    images['tram'] = load_and_scale_image(os.path.join(asset_dir, 'tram.png'))
+    # Tram etwas kleiner skalieren (Faktor 0.7 vom Standard)
+    images['tram'] = load_and_scale_image(os.path.join(asset_dir, 'tram.png'), scale=SCALE_FACTOR * 0.7)
 
     for i in range(1, MAX_VISUAL_PERSONS + 1):
         filename = f"waiting_{i}.png"
@@ -213,7 +220,10 @@ def draw_led_ring(screen, active_leds, total_leds, state, breathing_alpha=255):
                 current_color = COLOR_LED_ON
 
         elif state == STATE_TRAM:
-            if i < active_leds:
+            # Weiß leert sich im Uhrzeigersinn (Countdown)
+            leds_gone = total_leds - active_leds
+            shifted_i = (i - 1) % total_leds
+            if shifted_i >= leds_gone:
                 is_lit = True
                 current_color = COLOR_LED_ON
 
@@ -275,7 +285,10 @@ def main():
     slow_mode_active = False
 
     visual_active_leds = 0
-
+    
+    # Flags für Tram-Modus
+    tram_active = False  # Wenn True, sind wir in einem Tram-Zyklus (längeres Grün + Icon)
+    
     running = True
     while running:
         dt = clock.tick(60)
@@ -294,8 +307,20 @@ def main():
                         esp.set_pulsing(True)
 
                 if event.key == pygame.K_t:
-                    current_state = STATE_TRAM
-                    tram_display_timer = now
+                    debug_log("T-Taste gedrückt (Tram)!")
+                    if current_state == STATE_GREEN:
+                        # Wenn bereits GRÜN, dann Tram-Modus aktivieren und Zeit resetten (Verlängerung)
+                        tram_active = True
+                        debug_log("Tram während Grün! Verlängere Grünphase.")
+                        # Reset float tank to full for 25s
+                        green_leds_left_float = float(VISUAL_LED_COUNT)
+                        slow_mode_active = False # Tram override slow mode defaults
+                    else:
+                        # Sonst Standard Tram Ablauf starten
+                        current_state = STATE_TRAM
+                        timer_elapsed = 0
+                        tram_active = True # Zyklus beginnt
+                        tram_display_timer = now # Für andere Animationszwecke
 
                 if event.key == pygame.K_SPACE:
                     if current_state == STATE_GREEN:
@@ -346,10 +371,23 @@ def main():
             # Wenn Tram erkannt, sofort in Tram-Modus wechseln (Override)
             if len(esp.sensor_values) >= 8:
                 if esp.sensor_values[6] == 1 or esp.sensor_values[7] == 1:
-                    # Nur neu starten/überschreiben, wenn erkannt
-                    current_state = STATE_TRAM
-                    tram_display_timer = now
-                    # debug_log("Tram Sensor aktiv!")
+                    # Nur Trigger wenn nicht schon im TRAM-Ablauf
+                    if not tram_active:
+                        debug_log("Tram erkannt (Sensor)!")
+                        
+                        if current_state == STATE_GREEN:
+                             # Wenn bereits GRÜN, dann Tram-Modus aktivieren und Zeit resetten (Verlängerung)
+                             tram_active = True
+                             debug_log("Tram während Grün (Sensor)! Verlängere Grünphase.")
+                             # Reset float tank to full for 25s
+                             green_leds_left_float = float(VISUAL_LED_COUNT)
+                             slow_mode_active = False
+                        elif current_state != STATE_TRAM:
+                             # Normaler Start Tram Zyklus
+                            current_state = STATE_TRAM
+                            timer_elapsed = 0
+                            tram_active = True
+                            tram_display_timer = now
 
         if current_state == STATE_IDLE:
             # Automatische Auslösung, wenn Personen erkannt werden
@@ -362,9 +400,32 @@ def main():
                     esp.set_pulsing(True)
 
         elif current_state == STATE_TRAM:
-            if now - tram_display_timer > 2000:
-                current_state = STATE_IDLE
+            # Tram "Pre-Green" Phase: 5 Sekunden insgesamt
+            timer_elapsed += dt
+            
+            # Visualisierung: Ring leert sich schnell (Countdown bis Grün)
+            ratio = timer_elapsed / TIME_TRAM_PRE_GREEN  # 0->1
+            # Inverse für Countdown
+            leds_visible_ratio = 1.0 - ratio
+            if leds_visible_ratio < 0: leds_visible_ratio = 0
+            
+            visual_active_leds = int(leds_visible_ratio * VISUAL_LED_COUNT)
+
+            if timer_elapsed >= TIME_TRAM_PRE_GREEN:
+                # Wechsel zu Grün (Tram Modus bleibt aktiv)
+                current_state = STATE_GREEN
                 timer_elapsed = 0
+                
+                # GRÜN TANK definieren (Fest 25s)
+                # Wir manipulieren green_leds_left_float so, dass es für 25s reicht
+                # Points needed = DurationMS / MS_per_LED
+                # ABER mein Code unten nutzt SECONDS_PER_LED vars.
+                # Wir setzen hier einfach einen Dummy-Wert und flaggen, dass wir feste Zeit nutzen.
+                
+                # Wir nutzen die existierende Logik: Tank voll machen (visual), aber Geschwindigkeit anpassen
+                green_leds_left_float = float(VISUAL_LED_COUNT) 
+                
+                slow_mode_active = False
 
         # --- ROT PHASE (WARTEN) ---
         elif current_state == STATE_RED:
@@ -407,8 +468,16 @@ def main():
 
         # --- GRÜN PHASE (GEHEN) ---
         elif current_state == STATE_GREEN:
-            # Wähle Geschwindigkeit (Keine visuellen Extras, nur Mathe)
-            seconds_per_led = SECONDS_PER_LED_GREEN_SLOW if slow_mode_active else SECONDS_PER_LED_GREEN
+            # Wähle Geschwindigkeit
+            if tram_active:
+                # 25 Sekunden für den ganzen Ring
+                # Total Points = VISUAL_LED_COUNT
+                # Time = 25s
+                # Seconds per LED = 25 / VISUAL_LED_COUNT = 1.0
+                seconds_per_led = TIME_TRAM_GREEN_DURATION / 1000.0 / VISUAL_LED_COUNT
+            else:
+                seconds_per_led = SECONDS_PER_LED_GREEN_SLOW if slow_mode_active else SECONDS_PER_LED_GREEN
+            
             ms_per_led = seconds_per_led * 1000
 
             # Tank leeren
@@ -433,6 +502,7 @@ def main():
                 timer_elapsed = 0
                 person_count = 0
                 slow_mode_active = False
+                tram_active = False  # Tram Zyklus beenden
                 if esp:
                     esp.set_pulsing(False)
                 debug_log("Zyklus beendet.")
@@ -484,7 +554,17 @@ def main():
                 c_red, c_yellow, c_green = 1, 0, 0  # Rot
 
         elif current_state == STATE_TRAM:
-            c_red, c_yellow, c_green = 1, 0, 0
+            # T=0-3s: Gelb, T=3-5s: Rot
+            # timer_elapsed läuft von 0 bis 5000
+            if timer_elapsed < TIME_TRAM_YELLOW:
+                # Autos Gelb
+                c_red, c_yellow, c_green = 0, 1, 0
+            else:
+                # Autos Rot ("Buffer")
+                c_red, c_yellow, c_green = 1, 0, 0
+            
+            # Fußgänger Rot
+            p_red, p_green = 1, 0
 
         # Update senden / Empfangen
         if ESP_AVAILABLE and esp:
@@ -524,7 +604,8 @@ def main():
         if current_state == STATE_TRAM:
             tram_rect = images['tram'].get_rect(center=pos_tram)
             screen.blit(images['tram'], tram_rect)
-            draw_led_ring(screen, VISUAL_LED_COUNT, VISUAL_LED_COUNT, STATE_TRAM, 255)
+            # Countdown Ring (Weiß)
+            draw_led_ring(screen, visual_active_leds, VISUAL_LED_COUNT, STATE_TRAM, 255)
 
         elif current_state == STATE_CLEARANCE:
             draw_led_ring(screen, VISUAL_LED_COUNT, VISUAL_LED_COUNT, STATE_CLEARANCE, clearance_alpha)
@@ -532,6 +613,17 @@ def main():
             draw_countdown_timer(screen, time_left)
 
         elif current_state == STATE_GREEN:
+            # Wenn Tram aktiv, zusätzlich Tram-Icon anzeigen (Atemanimation)
+            if tram_active:
+                # Atemanimation: Sinus von Zeit
+                # now ist ms. Periode z.B. 2s = 2000ms -> now * (2pi/2000)
+                # Modifiziert für min. 20% Helligkeit (ca. 50 alpha) bis 255
+                breath_alpha = int(153 + 102 * math.sin(now * 0.003))
+                tram_surf = images['tram'].copy()
+                tram_surf.set_alpha(breath_alpha)
+                tram_rect = tram_surf.get_rect(center=pos_tram)
+                screen.blit(tram_surf, tram_rect)
+
             # Einfacher weißer Ring
             draw_led_ring(screen, visual_active_leds, VISUAL_LED_COUNT, STATE_GREEN, 255)
 
