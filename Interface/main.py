@@ -342,6 +342,15 @@ def main():
                     slow_mode_active = not slow_mode_active
                     debug_log(f"ESP Button 2! Slow Mode: {slow_mode_active}")
 
+            # Tram Sensoren Check (Indizes 6 und 7)
+            # Wenn Tram erkannt, sofort in Tram-Modus wechseln (Override)
+            if len(esp.sensor_values) >= 8:
+                if esp.sensor_values[6] == 1 or esp.sensor_values[7] == 1:
+                    # Nur neu starten/überschreiben, wenn erkannt
+                    current_state = STATE_TRAM
+                    tram_display_timer = now
+                    # debug_log("Tram Sensor aktiv!")
+
         if current_state == STATE_IDLE:
             # Automatische Auslösung, wenn Personen erkannt werden
             if person_count > 0:
