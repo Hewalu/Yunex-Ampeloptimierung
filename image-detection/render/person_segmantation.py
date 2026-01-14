@@ -8,7 +8,7 @@ import numpy as np
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Gehe ein Verzeichnis hoch (zu image-detection) und dann in 'models'
 MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
-MODEL_NAME = "yolo11x-seg.pt"  # Zurück auf YOLO11 Segmentation geändert (v12 nicht gefunden)
+MODEL_NAME = "yolo12m-seg.pt" 
 
 INPUT_ROOT = os.path.join(BASE_DIR, "input")
 OUTPUT_ROOT = os.path.join(BASE_DIR, "output")

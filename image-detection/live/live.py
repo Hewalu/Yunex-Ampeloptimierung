@@ -1,16 +1,14 @@
+import argparse
 import cv2
 import time
+import os
 import numpy as np
 from ultralytics import YOLO
-import tkinter as tk
-from tkinter import filedialog
-import sys
-import os
 
 # Konfiguration
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-MODEL_NAME = "yolo11n-seg.pt"
+MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
+MODEL_NAME = "yolo26s-seg.pt"
 
 DEBOUNCE_TIME = 0.25  # Reduziert auf 0.25 Sekunden
 
@@ -88,11 +86,21 @@ class SpeedEstimator:
                 if dt > 0.1:  # Only calculate if we have a little bit of time passed
                     dist_pixels = np.sqrt((cx - x0)**2 + (cy - y0)**2)
 
-                    # Track Y-movement for direction
-                    # cy > y0 -> Moving Down -> Incoming
-                    # cy < y0 -> Moving Up -> Outgoing
+                    # Direction Calculation (Y-axis movement)
+                    # Y increases downwards.
+                    # cy > y0 -> Moving Down -> Incoming (Top of screen to Bottom)
+                    # cy < y0 -> Moving Up -> Outgoing (Bottom of screen to Top)
+                    # dy = cy - y0
+                    # if abs(dy) > 10: # Threshold to ignore jitter
+                    #     if dy > 0:
+                    #         direction = "INCOMING"
+                    #     else:
+                    #         direction = "OUTGOING"
+
+                    # track_data['last_direction'] = direction
 
                     # Estimate scale: Assume average person is 1.7m tall
+                    # pixels_per_meter = height_in_pixels / 1.7
                     avg_h = (h + h0) / 2
                     if avg_h > 0:
                         pixels_per_meter = avg_h / 1.7
@@ -108,9 +116,12 @@ class SpeedEstimator:
                 # If speed is very low, assume waiting
                 direction = "WAITING"
             else:
+                # Only update direction if moving fast enough
                 if direction == "WAITING":
                     direction = "UNKNOWN"  # Reset if started moving
 
+                # Recalculate or use dy from above if available?
+                # To be clean, we should recalc dy here or use movement
                 if len(positions) > 1:
                     t0, x0, y0, h0 = positions[0]
                     dy = cy - y0
@@ -141,6 +152,40 @@ class SpeedEstimator:
         return active_speeds
 
 
+def list_available_cameras(max_check=5):
+    """Listet verfügbare Kamera-Indizes auf."""
+    print("Suche nach verfügbaren Kameras...")
+    available = []
+    for i in range(max_check):
+        temp_cap = cv2.VideoCapture(i)
+        if temp_cap.isOpened():
+            print(f" [✓] Kamera gefunden auf Index {i}")
+            available.append(i)
+            temp_cap.release()
+    if not available:
+        print(" [!] Keine Kameras gefunden.")
+    print("-" * 30)
+    return available
+
+
+def parse_source_arg(raw_value):
+    """Konvertiert CLI-Eingaben in Kamera-Indizes oder behält Stream-URLs."""
+    if raw_value is None:
+        return 0
+
+    if isinstance(raw_value, int):
+        return raw_value
+
+    value = str(raw_value).strip()
+    if value.isdigit():
+        return int(value)
+
+    try:
+        return int(float(value))
+    except ValueError:
+        return value
+
+
 class Colors:
     # Modern Color Palette
     BG_DARK = (18, 18, 18)        # #121212
@@ -166,10 +211,14 @@ class UIUtils:
         # Check if we need transparency
         if alpha < 1.0 and thickness == -1:
             overlay = img.copy()
-            # Draw standard rounded rect on overlay (Mockup)
+            # Draw standard rounded rect on overlay
+            # Limitation: OpenCV doesn't have native rounded filled rect.
+            # Approximation: Rectangle with circles at corners
+
             # Inner rects
             cv2.rectangle(overlay, (x1 + radius, y1), (x2 - radius, y2), color, -1)
             cv2.rectangle(overlay, (x1, y1 + radius), (x2, y2 - radius), color, -1)
+
             # Corners
             cv2.circle(overlay, (x1 + radius, y1 + radius), radius, color, -1)
             cv2.circle(overlay, (x2 - radius, y1 + radius), radius, color, -1)
@@ -178,9 +227,12 @@ class UIUtils:
 
             cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
         else:
+            # Simple version for outlines or opaque
+            # Just use normal rectangle for simplicity if outline, or same logic
             # Inner rects
             cv2.rectangle(img, (x1 + radius, y1), (x2 - radius, y2), color, thickness)
             cv2.rectangle(img, (x1, y1 + radius), (x2, y2 - radius), color, thickness)
+            # We skip corner smoothing for outlines to save code complexity or usage cv2.ellipse
             pass
 
     @staticmethod
@@ -267,10 +319,6 @@ def draw_interface(frame, person_count, width=1920, height=1080):
 
     # Resize Grid
     h, w = frame.shape[:2]
-    # Handle case where frame is empty or size 0
-    if w == 0 or h == 0:
-        return canvas
-
     scale = min(feed_w / w, feed_h / h)
     new_w = int(w * scale)
     new_h = int(h * scale)
@@ -292,7 +340,7 @@ def draw_interface(frame, person_count, width=1920, height=1080):
 
     # --- Status Header (Time, FPS placeholder) ---
     local_time = time.strftime("%H:%M:%S")
-    UIUtils.draw_text(canvas, f"DEMO MODE | {local_time}", (dash_x, margin + 30), 0.6, Colors.TEXT_GRAY)
+    UIUtils.draw_text(canvas, f"SYSTEM ONLINE | {local_time}", (dash_x, margin + 30), 0.6, Colors.TEXT_GRAY)
 
     # --- Person Counter Panel ---
     # Center X of dashboard
@@ -330,32 +378,13 @@ def get_track_color(track_id):
     return tuple(color)
 
 
-def select_video_file():
-    """Opens a file dialog to select a video file."""
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
+def main(args):
+    # Zeige verfügbare Kameras an
+    available_cams = list_available_cameras()
 
-    file_path = filedialog.askopenfilename(
-        title="Wähle eine Videodatei aus",
-        filetypes=[
-            ("Video files", "*.mp4 *.avi *.mov *.mkv"),
-            ("All files", "*.*")
-        ]
-    )
-
-    return file_path
-
-
-def main():
-    print("Starte Demo-Modus...")
-
-    video_path = select_video_file()
-
-    if not video_path:
-        print("Kein Video ausgewählt. Beende Programm.")
-        return
-
-    print(f"Video ausgewählt: {video_path}")
+    iphone_source = args.iphone_url
+    source = iphone_source if iphone_source else args.source
+    fallback_local_source = available_cams[0] if available_cams else None
 
     # Lade das YOLOv11 Nano Segmentation Modell
     print(f"Lade Modell ({MODEL_NAME})...")
@@ -370,28 +399,65 @@ def main():
     smoother = CountSmoother()
     speed_estimator = SpeedEstimator()
 
-    cap = cv2.VideoCapture(video_path)
+    # Öffne die Webcam oder den Stream
+    if isinstance(source, int) and len(available_cams) > 1 and source not in available_cams:
+        if fallback_local_source is not None:
+            print(f"Warnung: Kamera {source} nicht gefunden. Versuche {fallback_local_source}...")
+            source = fallback_local_source
+
+    if isinstance(source, int):
+        fallback_local_source = source
+    elif iphone_source:
+        print(f"Nutze iPhone-Stream: {iphone_source}")
+    else:
+        print(f"Nutze benutzerdefinierte Quelle: {source}")
+
+    cap = cv2.VideoCapture(source)
+
+    if not cap.isOpened() and fallback_local_source is not None and not isinstance(source, int):
+        print(f"Fehler: Konnte Videoquelle '{source}' nicht öffnen. Fallback auf Kamera {fallback_local_source}.")
+        cap.release()
+        source = fallback_local_source
+        cap = cv2.VideoCapture(source)
 
     if not cap.isOpened():
-        print(f"Fehler: Konnte Video '{video_path}' nicht öffnen.")
+        print(f"Fehler: Konnte Videoquelle '{source}' nicht öffnen.")
         return
 
+    def switch_capture(new_source):
+        nonlocal cap, source, fallback_local_source
+        print(f"Versuche Quelle '{new_source}' zu öffnen...")
+        new_cap = cv2.VideoCapture(new_source)
+        if not new_cap.isOpened():
+            print(f"Warnung: Konnte Quelle '{new_source}' nicht öffnen.")
+            new_cap.release()
+            return False
+
+        cap.release()
+        cap = new_cap
+        source = new_source
+        if isinstance(new_source, int):
+            fallback_local_source = new_source
+        return True
+
     # Fenster erstellen und auf Vollbild setzen
-    window_name = "Personenerkennung Demo"
+    window_name = "Personenerkennung Interface"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    print("Starte Videoanalyse.")
+    print("Starte Personenerkennung mit Instance Segmentation.")
     print(" [q] Beenden")
+    print(" [c] Kamera wechseln")
+    if iphone_source:
+        print(" [i] iPhone-Stream umschalten")
 
     while True:
         success, frame = cap.read()
         if not success:
-            print("Ende des Videos.")
-            # Optional: Loop video
-            # cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            # continue
-            break
+            print("Ende des Videostreams oder Fehler beim Lesen.")
+            # Kurze Pause, um CPU nicht zu überlasten, falls Kamera weg ist
+            time.sleep(0.1)
+            continue
 
         # Führe YOLO Tracking auf dem Frame aus (aktiviere Masken)
         # Hinweis: retina_masks=True sorgt für bessere Maskenqualität, ist aber etwas langsamer.
@@ -495,9 +561,32 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
+        elif key == ord("c"):
+            # Kamera wechseln
+            if len(available_cams) > 0:
+                print("Wechsle Kamera...")
+                if isinstance(source, int) and source in available_cams:
+                    current_idx = available_cams.index(source)
+                    next_idx = (current_idx + 1) % len(available_cams)
+                else:
+                    next_idx = 0
 
-        # Add slight delay if processing is too fast for playback visualization
-        # time.sleep(0.01)
+                switch_capture(available_cams[next_idx])
+            else:
+                print("Keine Kameras in der Liste verfügbar.")
+        elif key == ord("i") and iphone_source:
+            # Zwischen iPhone-Stream und lokaler Kamera wechseln
+            target = iphone_source if source != iphone_source else fallback_local_source
+            if target is None:
+                print("Keine lokale Kamera verfügbar.")
+                continue
+
+            if target == iphone_source:
+                print("Verbinde mit iPhone-Stream...")
+            else:
+                print(f"Zurück zu Kamera {target}...")
+
+            switch_capture(target)
 
     # Ressourcen freigeben
     cap.release()
@@ -505,4 +594,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Personenerkennung mit YOLOv11n und modernem Interface.")
+    parser.add_argument(
+        "--source",
+        default="0",
+        help="Kameraindex (0,1,...) oder Pfad/Stream-URL. Beispiel: --source http://192.168.0.10:8080/video"
+    )
+    parser.add_argument(
+        "--iphone-url",
+        default=None,
+        help="HTTP/RTSP-Stream deiner iPhone-Kamera (z.B. aus der App 'IP Camera'). Hat Vorrang vor --source."
+    )
+    cli_args = parser.parse_args()
+    cli_args.source = parse_source_arg(cli_args.source)
+    main(cli_args)

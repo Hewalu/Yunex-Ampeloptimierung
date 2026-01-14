@@ -13,7 +13,7 @@ INPUT_ROOT = os.path.join(BASE_DIR, "input")
 OUTPUT_ROOT = os.path.join(BASE_DIR, "output")
 
 # YOLO Model Configuration
-MODEL_NAME = "yolo11x.pt"
+MODEL_NAME = "yolo12m.pt"
 CONF_THRESHOLD = 0.25   # Mindest-Wahrscheinlichkeit (0.0 - 1.0)
 IOU_THRESHOLD = 0.5     # Overlap Threshold für NMS (0.0 - 1.0)
 CLASSES = [0]           # Klassen-Filter: 0 = Person. None für alle Klassen.
