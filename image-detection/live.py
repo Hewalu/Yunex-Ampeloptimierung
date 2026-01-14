@@ -1,10 +1,13 @@
 import argparse
 import cv2
+import os
 import time
 import numpy as np
 from ultralytics import YOLO
 
 # Konfiguration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(BASE_DIR, "models")
 DEBOUNCE_TIME = 0.25  # Reduziert auf 0.25 Sekunden
 
 
@@ -69,7 +72,7 @@ class SpeedEstimator:
             # Calculate speed and direction
             speed = 0.0
             direction = track_data.get('last_direction', "UNKNOWN")
-            
+
             positions = track_data['positions']
             if len(positions) > 1:
                 # Compare current with oldest in history (within window) for stability
@@ -79,9 +82,9 @@ class SpeedEstimator:
 
                 if dt > 0.1:  # Only calculate if we have a little bit of time passed
                     dist_pixels = np.sqrt((cx - x0)**2 + (cy - y0)**2)
-                    
+
                     # Direction Calculation (Y-axis movement)
-                    # Y increases downwards. 
+                    # Y increases downwards.
                     # cy > y0 -> Moving Down -> Incoming (Top of screen to Bottom)
                     # cy < y0 -> Moving Up -> Outgoing (Bottom of screen to Top)
                     # dy = cy - y0
@@ -90,7 +93,7 @@ class SpeedEstimator:
                     #         direction = "INCOMING"
                     #     else:
                     #         direction = "OUTGOING"
-                    
+
                     # track_data['last_direction'] = direction
 
                     # Estimate scale: Assume average person is 1.7m tall
@@ -110,16 +113,16 @@ class SpeedEstimator:
                 # If speed is very low, assume waiting
                 direction = "WAITING"
             else:
-                 # Only update direction if moving fast enough
-                 if direction == "WAITING":
-                     direction = "UNKNOWN" # Reset if started moving
-                 
-                 # Recalculate or use dy from above if available? 
-                 # To be clean, we should recalc dy here or use movement
-                 if len(positions) > 1:
-                     t0, x0, y0, h0 = positions[0]
-                     dy = cy - y0
-                     if abs(dy) > 10: 
+                # Only update direction if moving fast enough
+                if direction == "WAITING":
+                    direction = "UNKNOWN"  # Reset if started moving
+
+                # Recalculate or use dy from above if available?
+                # To be clean, we should recalc dy here or use movement
+                if len(positions) > 1:
+                    t0, x0, y0, h0 = positions[0]
+                    dy = cy - y0
+                    if abs(dy) > 10:
                         if dy > 0:
                             direction = "INCOMING"
                         else:
@@ -293,7 +296,7 @@ class UIUtils:
             font = cv2.FONT_HERSHEY_SIMPLEX
             (lw, lh), _ = cv2.getTextSize(label, font, 0.6, 1)
             panel_w = max(140, lw + 20)
-            
+
             UIUtils.draw_glass_panel(img, x1, y1 - 35, panel_w, 30, color=(0, 0, 0), alpha=0.6)
             cv2.putText(img, label, (x1 + 10, y1 - 12), font, 0.6, Colors.TEXT_WHITE, 1, cv2.LINE_AA)
             if sublabel:
@@ -382,7 +385,8 @@ def main(args):
     # Lade das YOLOv11 Nano Segmentation Modell
     print("Lade Modell (YOLOv11n-seg)...")
     try:
-        model = YOLO("yolo11n-seg.pt")
+        model_path = os.path.join(MODELS_DIR, "yolo11n-seg.pt")
+        model = YOLO(model_path)
     except Exception as e:
         print(f"Fehler beim Laden des Modells: {e}")
         return
@@ -507,20 +511,20 @@ def main(args):
                 color = Colors.ACCENT_ORANGE
             else:  # LOW
                 color = Colors.ACCENT_GREEN
-            
+
             # Determine Label and Style
             dir_label = ""
             style = "inward"
-            
+
             if direction == "INCOMING":
                 dir_label = "| HIN"
-                style = "outward" # Corners point out
+                style = "outward"  # Corners point out
             elif direction == "OUTGOING":
                 dir_label = "| WEG"
-                style = "inward" # Corners point in
+                style = "inward"  # Corners point in
             elif direction == "WAITING":
                 dir_label = "| WARTET"
-                style = "inward" # Corners point in
+                style = "inward"  # Corners point in
 
             label = f"{speed:.1f} m/s {dir_label}"
             UIUtils.draw_hud_box(annotated_frame, box, color, label, category, style=style)

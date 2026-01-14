@@ -1,4 +1,5 @@
 __pycache__/
+image-detection/models/
 yolo11n.pt
 yolo11x.pt
 yolo11n-seg.pt
