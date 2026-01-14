@@ -12,6 +12,10 @@ MODEL_NAME = "yolo26x-seg.pt"
 INPUT_ROOT = os.path.join(BASE_DIR, "input")
 OUTPUT_ROOT = os.path.join(BASE_DIR, "output")
 
+# Liste der zu verarbeitenden Videos (Dateinamen). Leer lassen für alle.
+# Beispiel: TARGET_VIDEOS = ["video1.mp4", "test.mp4"]
+TARGET_VIDEOS = ["big_group.mp4"]
+
 # YOLO Model Configuration
 CONF_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.5
@@ -119,7 +123,8 @@ class SpeedEstimator:
         # Dictionary to store tracking history: id -> {positions: [(ts, x, y, h)], last_speed: float}
         self.tracks = {}
         # Parameters
-        self.history_duration = 1.0  # Keep 1 second of history
+        # history_duration bestimmt, wie lange die Pfade (Trails) sind.
+        self.history_duration = 3.0  # Erhöht für längere Trails
         self.speed_smooth_factor = 0.7  # EMA factor for speed
 
     def update(self, results, current_time=None):
@@ -162,11 +167,29 @@ class SpeedEstimator:
 
             positions = track_data['positions']
             if len(positions) > 1:
+                # Compare current with oldest in history (within window) for stability
+                # Using the oldest available point gives a smoother average over the window
                 t0, x0, y0, h0 = positions[0]
                 dt = current_time - t0
 
                 if dt > 0.1:  # Only calculate if we have a little bit of time passed
                     dist_pixels = np.sqrt((cx - x0)**2 + (cy - y0)**2)
+
+                    # Direction Calculation (Y-axis movement)
+                    # Y increases downwards.
+                    # cy > y0 -> Moving Down -> Incoming (Top of screen to Bottom)
+                    # cy < y0 -> Moving Up -> Outgoing (Bottom of screen to Top)
+                    # dy = cy - y0
+                    # if abs(dy) > 10: # Threshold to ignore jitter
+                    #     if dy > 0:
+                    #         direction = "INCOMING"
+                    #     else:
+                    #         direction = "OUTGOING"
+
+                    # track_data['last_direction'] = direction
+
+                    # Estimate scale: Assume average person is 1.7m tall
+                    # pixels_per_meter = height_in_pixels / 1.7
                     avg_h = (h + h0) / 2
                     if avg_h > 0:
                         pixels_per_meter = avg_h / 1.7
@@ -186,6 +209,8 @@ class SpeedEstimator:
                 if direction == "WAITING":
                     direction = "UNKNOWN"  # Reset if started moving
 
+                # Recalculate or use dy from above if available?
+                # To be clean, we should recalc dy here or use movement
                 if len(positions) > 1:
                     t0, x0, y0, h0 = positions[0]
                     dy = cy - y0
@@ -344,6 +369,28 @@ def process_video(video_path, output_folder):
         # Update Speed Estimation
         speeds = speed_estimator.update(results, timestamp)
 
+        # 1.5. Zeichne Motion Trails (Pfade)
+        # Wir nutzen die Historie aus dem SpeedEstimator
+        for track_id, track_data in speed_estimator.tracks.items():
+            # Prüfe, ob Track aktuell noch aktiv ist (optional, oder wir zeichnen auch "Geisterpfade" kurz nach)
+            # Hier zeichnen wir einfach alles was noch im Speicher ist (wird eh nach history_duration gelöscht)
+            positions = track_data['positions']
+            if len(positions) > 2:
+                # Extrahiere Punkte (cx, cy)
+                points = []
+                for _, cx, cy, _ in positions:
+                    points.append([int(cx), int(cy)])
+
+                points = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+
+                color = get_track_color(track_id)
+                # Zeichne Polyline
+                cv2.polylines(annotated_frame, [points], isClosed=False, color=color, thickness=2)
+
+                # Optional: Punkte an den Positionen zeichnen für "Tech-Look"
+                # for p in points:
+                #    cv2.circle(annotated_frame, tuple(p[0]), 2, color, -1)
+
         # 2. Zeichne HUD Overlays (Vordergrund/Ecken)
         for track_id, data in speeds.items():
             speed = data['speed']
@@ -409,6 +456,10 @@ if __name__ == "__main__":
             for file in files:
                 # Unterscheidung auf .mov case-insensitive
                 if file.lower().endswith(('.mp4')):
+                    # Wenn TARGET_VIDEOS definiert ist, nur diese Videos verarbeiten
+                    if TARGET_VIDEOS and file not in TARGET_VIDEOS:
+                        continue
+
                     full_path = os.path.join(root, file)
                     video_files.append(full_path)
     else:
