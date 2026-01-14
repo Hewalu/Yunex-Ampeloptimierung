@@ -45,8 +45,9 @@ class SpeedEstimator:
         # Extract data from YOLO results
         track_ids = results[0].boxes.id.int().cpu().tolist()
         boxes = results[0].boxes.xyxy.cpu().tolist()
+        classes = results[0].boxes.cls.int().cpu().tolist()
 
-        for track_id, box in zip(track_ids, boxes):
+        for track_id, box, cls_id in zip(track_ids, boxes, classes):
             x1, y1, x2, y2 = box
             cx = (x1 + x2) / 2
             cy = (y1 + y2) / 2
@@ -139,7 +140,8 @@ class SpeedEstimator:
                 'speed': speed,
                 'category': category,
                 'direction': direction,
-                'box': box
+                'box': box,
+                'class_id': cls_id
             }
 
         return active_speeds
@@ -453,7 +455,7 @@ def main(args):
 
         # Führe YOLO Tracking auf dem Frame aus (aktiviere Masken)
         # Hinweis: retina_masks=True sorgt für bessere Maskenqualität, ist aber etwas langsamer.
-        results = model.track(frame, classes=[0], persist=True, verbose=False, retina_masks=True)
+        results = model.track(frame, classes=[0, 2], persist=True, verbose=False, retina_masks=True)
 
         # Clone frame for clean drawing
         annotated_frame = frame.copy()
@@ -498,35 +500,47 @@ def main(args):
             category = data['category']
             direction = data.get('direction', 'UNKNOWN')
             box = data['box']
+            cls_id = data.get('class_id', 0)
             x1, y1, x2, y2 = map(int, box)
 
-            # Farbe je nach Kategorie
-            if category == "HIGH":
-                color = Colors.ACCENT_RED
-            elif category == "MEDIUM":
-                color = Colors.ACCENT_ORANGE
-            else:  # LOW
-                color = Colors.ACCENT_GREEN
-            
-            # Determine Label and Style
-            dir_label = ""
-            style = "inward"
-            
-            if direction == "INCOMING":
-                dir_label = "| HIN"
-                style = "outward" # Corners point out
-            elif direction == "OUTGOING":
-                dir_label = "| WEG"
-                style = "inward" # Corners point in
-            elif direction == "WAITING":
-                dir_label = "| WARTET"
-                style = "inward" # Corners point in
+            if cls_id == 2:  # Car / Auto
+                # Nur fahrende Autos markieren: speed > 0.5 (als Schwellenwert)
+                if speed > 0.5:
+                    color = Colors.ACCENT_RED
+                    label = "Auto"
+                    sublabel = f"{speed:.1f} m/s"
+                    UIUtils.draw_hud_box(annotated_frame, box, color, label, sublabel, style="outward")
+            else:
+                # Person logic
+                # Farbe je nach Kategorie
+                if category == "HIGH":
+                    color = Colors.ACCENT_RED
+                elif category == "MEDIUM":
+                    color = Colors.ACCENT_ORANGE
+                else:  # LOW
+                    color = Colors.ACCENT_GREEN
+                
+                # Determine Label and Style
+                dir_label = ""
+                style = "inward"
+                
+                if direction == "INCOMING":
+                    dir_label = "| HIN"
+                    style = "outward" # Corners point out
+                elif direction == "OUTGOING":
+                    dir_label = "| WEG"
+                    style = "inward" # Corners point in
+                elif direction == "WAITING":
+                    dir_label = "| WARTET"
+                    style = "inward" # Corners point in
 
-            label = f"{speed:.1f} m/s {dir_label}"
-            UIUtils.draw_hud_box(annotated_frame, box, color, label, category, style=style)
+                label = f"{speed:.1f} m/s {dir_label}"
+                UIUtils.draw_hud_box(annotated_frame, box, color, label, category, style=style)
 
         # Zähle Personen (Rohdaten)
-        raw_count = len(results[0].boxes)
+        # Nur Personen zählen (class 0)
+        boxes_cls = results[0].boxes.cls.int().cpu().tolist()
+        raw_count = boxes_cls.count(0)
 
         # Glätte den Wert (Debouncing)
         smooth_count = smoother.update(raw_count)
