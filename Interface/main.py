@@ -45,7 +45,7 @@ SCALE_FACTOR = 0.3
 MAX_PERSON_CAP = 8
 MAX_VISUAL_PERSONS = 8
 ADD_LEDS_PER_PERSON = 1
-CROWD_BONUS_FACTOR = 0.2
+CROWD_BONUS_FACTOR = 0.3
 
 # 2. LED SETUP
 # Wir nutzen 21 Punkte für Grün.
@@ -60,7 +60,7 @@ SECONDS_PER_LED_GREEN = 0.333  # Normales Ablaufen
 SECONDS_PER_LED_GREEN_SLOW = 0.5    # Langsames Ablaufen (Taste)
 
 # 4. FESTE PHASEN (in Millisekunden)
-TIME_SAFETY_PRE_GREEN = 4000  # Puffer bevor Fußgänger Grün bekommen (Alle Rot)
+TIME_SAFETY_PRE_GREEN = 3000  # Puffer bevor Fußgänger Grün bekommen (Alle Rot)
 TIME_CLEARANCE = 10000  # Räumzeit am Ende
 TIME_CAR_YELLOW = 3000  # Wie lange Autos Gelb haben vor Rot
 TIME_CAR_RED_YELLOW = 1500  # Wie lange Autos Rot-Gelb haben vor Grün
@@ -380,6 +380,10 @@ def main():
                 # Wechsel direkt zu GRÜN (Safety ist jetzt logisch Teil der Rot-Dauer)
                 current_state = STATE_GREEN
                 timer_elapsed = 0
+                
+                # VISUAL: Pulsieren aus, da jetzt Grün
+                if esp:
+                    esp.set_pulsing(False)
 
                 # GRÜN TANK Vorbereiten
                 bonus_leds = person_count * ADD_LEDS_PER_PERSON
@@ -398,6 +402,8 @@ def main():
                 # Wechsel zu GRÜN
                 current_state = STATE_GREEN
                 timer_elapsed = 0
+                if esp:
+                    esp.set_pulsing(False)
 
         # --- GRÜN PHASE (GEHEN) ---
         elif current_state == STATE_GREEN:
