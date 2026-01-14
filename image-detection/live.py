@@ -1,8 +1,10 @@
 import argparse
 import cv2
-import os
 import time
 import numpy as np
+import tkinter as tk
+from tkinter import filedialog
+import os
 from ultralytics import YOLO
 
 # Konfiguration
@@ -40,7 +42,7 @@ class SpeedEstimator:
 
     def update(self, results):
         current_time = time.time()
-        active_speeds = {}  # id -> {speed: float, category: str, direction: str, box: [x1, y1, x2, y2]}
+        active_speeds = {}  # id -> {speed: float, category: str, direction: str, box: [x1, y1, x2, y2], class_id: int}
 
         if not results or not results[0].boxes.id is not None:
             return active_speeds
@@ -48,8 +50,9 @@ class SpeedEstimator:
         # Extract data from YOLO results
         track_ids = results[0].boxes.id.int().cpu().tolist()
         boxes = results[0].boxes.xyxy.cpu().tolist()
+        class_ids = results[0].boxes.cls.int().cpu().tolist()
 
-        for track_id, box in zip(track_ids, boxes):
+        for track_id, box, cls_id in zip(track_ids, boxes, class_ids):
             x1, y1, x2, y2 = box
             cx = (x1 + x2) / 2
             cy = (y1 + y2) / 2
@@ -83,24 +86,24 @@ class SpeedEstimator:
                 if dt > 0.1:  # Only calculate if we have a little bit of time passed
                     dist_pixels = np.sqrt((cx - x0)**2 + (cy - y0)**2)
 
-                    # Direction Calculation (Y-axis movement)
-                    # Y increases downwards.
-                    # cy > y0 -> Moving Down -> Incoming (Top of screen to Bottom)
-                    # cy < y0 -> Moving Up -> Outgoing (Bottom of screen to Top)
-                    # dy = cy - y0
-                    # if abs(dy) > 10: # Threshold to ignore jitter
-                    #     if dy > 0:
-                    #         direction = "INCOMING"
-                    #     else:
-                    #         direction = "OUTGOING"
+                    # Estimate scale based on object class
+                    # Defaults to 1.7m (Person)
+                    real_height = 1.7
+                    if cls_id == 2:  # Car
+                        real_height = 1.5
+                    elif cls_id == 5:  # Bus
+                        real_height = 3.0
+                    elif cls_id == 7:  # Truck
+                        real_height = 3.5
+                    elif cls_id == 3:  # Motorcycle
+                        real_height = 1.5
+                    elif cls_id == 1:  # Bicycle
+                        real_height = 1.6  # Bike + Rider approx
 
-                    # track_data['last_direction'] = direction
-
-                    # Estimate scale: Assume average person is 1.7m tall
-                    # pixels_per_meter = height_in_pixels / 1.7
+                    # pixels_per_meter = height_in_pixels / real_height
                     avg_h = (h + h0) / 2
                     if avg_h > 0:
-                        pixels_per_meter = avg_h / 1.7
+                        pixels_per_meter = avg_h / real_height
                         dist_meters = dist_pixels / pixels_per_meter
                         raw_speed = dist_meters / dt
 
@@ -109,6 +112,7 @@ class SpeedEstimator:
                                 ((1 - self.speed_smooth_factor) * track_data['last_speed'])
 
             # Determine Direction based on Speed and Movement
+            # Direction logic mainly relevant for moving persons, but can apply to all
             if speed < 0.25:
                 # If speed is very low, assume waiting
                 direction = "WAITING"
@@ -117,8 +121,6 @@ class SpeedEstimator:
                 if direction == "WAITING":
                     direction = "UNKNOWN"  # Reset if started moving
 
-                # Recalculate or use dy from above if available?
-                # To be clean, we should recalc dy here or use movement
                 if len(positions) > 1:
                     t0, x0, y0, h0 = positions[0]
                     dy = cy - y0
@@ -133,7 +135,7 @@ class SpeedEstimator:
 
             # Categorize Speed
             category = "LOW"
-            if speed > 1.65:
+            if speed > 1.65:  # Thresholds might be different for cars, but keeping simple
                 category = "HIGH"
             elif speed > 1.1:
                 category = "MEDIUM"
@@ -142,7 +144,8 @@ class SpeedEstimator:
                 'speed': speed,
                 'category': category,
                 'direction': direction,
-                'box': box
+                'box': box,
+                'class_id': cls_id
             }
 
         return active_speeds
@@ -162,6 +165,66 @@ def list_available_cameras(max_check=5):
         print(" [!] Keine Kameras gefunden.")
     print("-" * 30)
     return available
+
+
+def show_startup_dialog():
+    """Zeigt einen Dialog zur Auswahl der Videoquelle."""
+    source = None
+
+    def use_camera():
+        nonlocal source
+        source = 0  # Standard-Kamera Index
+        root.destroy()
+
+    def choose_file():
+        nonlocal source
+        try:
+            file_path = filedialog.askopenfilename(
+                title="Wähle eine Videodatei",
+                filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"), ("All files", "*.*")]
+            )
+            if file_path:
+                source = file_path
+        except Exception as e:
+            print(f"Fehler bei Dateiauswahl: {e}")
+        root.destroy()
+
+    try:
+        root = tk.Tk()
+        root.title("TrafficOul Setup")
+
+        # Fenster zentrieren
+        window_width = 450
+        window_height = 250
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        center_x = int(screen_width/2 - window_width/2)
+        center_y = int(screen_height/2 - window_height/2)
+        root.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
+
+        # Style
+        root.configure(bg='#1e1e1e')
+
+        lbl = tk.Label(root, text="TrafficOul Systemstart", font=("Helvetica", 16, "bold"), fg="white", bg='#1e1e1e')
+        lbl.pack(pady=20)
+
+        btn_frame = tk.Frame(root, bg='#1e1e1e')
+        btn_frame.pack(fill="both", expand=True, padx=40, pady=10)
+
+        btn_cam = tk.Button(btn_frame, text="📷 Kamera Live Demo", command=use_camera,
+                            font=("Helvetica", 12), height=2, bg='#3a45ff', fg='white', borderwidth=0)
+        btn_cam.pack(fill="x", pady=5)
+
+        btn_file = tk.Button(btn_frame, text="📁 Video-Datei laden (Loop)", command=choose_file,
+                             font=("Helvetica", 12), height=2, bg='#4d4d4d', fg='white', borderwidth=0)
+        btn_file.pack(fill="x", pady=5)
+
+        root.mainloop()
+    except Exception as e:
+        print(f"GUI konnte nicht gestartet werden ({e}). Verwende Standardquellen.")
+        return None
+
+    return source
 
 
 def parse_source_arg(raw_value):
@@ -309,13 +372,19 @@ def draw_interface(frame, person_count, width=1920, height=1080):
 
     # 2. Left Side: Camera Feed (Modern Frame)
     # Calculate margins
-    margin = 40
-    feed_w = int(width * 0.65)
+    margin = 30
+    # Increase width for video (75% instead of 65%)
+    feed_w = int(width * 0.75)
     feed_h = int(height - 2 * margin)
 
     # Resize Grid
     h, w = frame.shape[:2]
+    # "Hochkant" feeling: Prioritize height if possible, but keep aspect ratio
     scale = min(feed_w / w, feed_h / h)
+
+    # If using full width leaves too much space at bottom, maybe stretch slightly?
+    # No, keep aspect ratio correct.
+
     new_w = int(w * scale)
     new_h = int(h * scale)
     resized_frame = cv2.resize(frame, (new_w, new_h))
@@ -333,6 +402,12 @@ def draw_interface(frame, person_count, width=1920, height=1080):
     dash_x = feed_x + new_w + margin
     dash_w = width - dash_x - margin
     dash_h = height - 2 * margin
+
+    # Ensure dash has minimum width
+    if dash_w < 300:
+        dash_w = 300
+        # If dash is pushed out, we might need to overlap or rethink layout,
+        # but with 1920px -> 75% is ~1440px video, leaving ~400px for dash. Enough.
 
     # --- Status Header (Time, FPS placeholder) ---
     local_time = time.strftime("%H:%M:%S")
@@ -375,11 +450,28 @@ def get_track_color(track_id):
 
 
 def main(args):
+    # Setup via GUI wenn keine spezifischen Argumente übergeben wurden (oder immer, wenn gewünscht)
+    # Hier checken wir, ob Arguments Standard sind.
+    startup_source = None
+    if args.source == 0 and args.iphone_url is None:
+        startup_source = show_startup_dialog()
+        if startup_source is None:
+            print("Keine Auswahl getroffen. Beende.")
+            return
+
     # Zeige verfügbare Kameras an
     available_cams = list_available_cameras()
 
     iphone_source = args.iphone_url
-    source = iphone_source if iphone_source else args.source
+
+    # Prioritäten: 1. iPhone CLI, 2. Startup Auswahl, 3. CLI Source
+    if iphone_source:
+        source = iphone_source
+    elif startup_source is not None:
+        source = startup_source
+    else:
+        source = args.source
+
     fallback_local_source = available_cams[0] if available_cams else None
 
     # Lade das YOLOv11 Nano Segmentation Modell
@@ -450,6 +542,12 @@ def main(args):
     while True:
         success, frame = cap.read()
         if not success:
+            # Check if this is a file loop
+            if isinstance(source, str) and os.path.exists(source):
+                # Restart video
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
+
             print("Ende des Videostreams oder Fehler beim Lesen.")
             # Kurze Pause, um CPU nicht zu überlasten, falls Kamera weg ist
             time.sleep(0.1)
@@ -457,7 +555,8 @@ def main(args):
 
         # Führe YOLO Tracking auf dem Frame aus (aktiviere Masken)
         # Hinweis: retina_masks=True sorgt für bessere Maskenqualität, ist aber etwas langsamer.
-        results = model.track(frame, classes=[0], persist=True, verbose=False, retina_masks=True)
+        # Classes: 0=Person, 1=Bicycle, 2=Car, 5=Bus, 7=Truck
+        results = model.track(frame, classes=[0, 1, 2, 5, 7], persist=True, verbose=False, retina_masks=True)
 
         # Clone frame for clean drawing
         annotated_frame = frame.copy()
@@ -465,10 +564,15 @@ def main(args):
         # 1. Zeichne Segmentation Masks (Hintergrund) bevor die Boxen kommen
         if results[0].boxes.id is not None and results[0].masks is not None:
             track_ids = results[0].boxes.id.int().cpu().tolist()
+            class_ids = results[0].boxes.cls.int().cpu().tolist()
 
             # Die Masken-Konturen abrufen (Liste von Arrays mit Koordinaten)
             # Verwende enumerate, da masks und boxes korrespondieren
             for i, track_id in enumerate(track_ids):
+                # Filter: Nur Personen (Class 0) maskieren
+                if class_ids[i] != 0:
+                    continue
+
                 try:
                     # Zufällige, aber konsistente Farbe für jede Person
                     color = get_track_color(track_id)
@@ -502,6 +606,7 @@ def main(args):
             category = data['category']
             direction = data.get('direction', 'UNKNOWN')
             box = data['box']
+            cls_id = data.get('class_id', 0)
             x1, y1, x2, y2 = map(int, box)
 
             # Farbe je nach Kategorie
@@ -512,25 +617,97 @@ def main(args):
             else:  # LOW
                 color = Colors.ACCENT_GREEN
 
-            # Determine Label and Style
-            dir_label = ""
-            style = "inward"
+            if cls_id == 0:  # PERSON
+                # Determine Label and Style
+                dir_label = ""
+                style = "inward"
 
-            if direction == "INCOMING":
-                dir_label = "| HIN"
-                style = "outward"  # Corners point out
-            elif direction == "OUTGOING":
-                dir_label = "| WEG"
-                style = "inward"  # Corners point in
-            elif direction == "WAITING":
-                dir_label = "| WARTET"
-                style = "inward"  # Corners point in
+                if direction == "INCOMING":
+                    dir_label = "| HIN"
+                    style = "outward"  # Corners point out
+                elif direction == "OUTGOING":
+                    dir_label = "| WEG"
+                    style = "inward"  # Corners point in
+                elif direction == "WAITING":
+                    dir_label = "| WARTET"
+                    style = "inward"  # Corners point in
 
-            label = f"{speed:.1f} m/s {dir_label}"
-            UIUtils.draw_hud_box(annotated_frame, box, color, label, category, style=style)
+                label = f"{speed:.1f} m/s {dir_label}"
+                UIUtils.draw_hud_box(annotated_frame, box, color, label, category, style=style)
+            elif cls_id == 1:  # BICYCLE
+                # Specific logic for bikes: Subtle if static, classified if moving
+
+                # Use speed threshold to determine if "standing" (approx < 1.0 m/s or < 0.5 depending on jitter)
+                if speed < 0.5:
+                    # Standing/Parked -> Very Subtle
+                    # Thin gray outline, no heavy label
+                    UIUtils.draw_rounded_rect(annotated_frame, (x1, y1), (x2, y2), (100, 100, 100), radius=5, thickness=1, alpha=0.4)
+                else:
+                    # Moving -> Classified
+                    # Standard Box
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), Colors.ACCENT_ORANGE, 2)
+
+                    label = f"RAD | {speed:.1f} m/s"
+
+                    # Small Label Panel
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    (lw, lh), _ = cv2.getTextSize(label, font, 0.5, 1)
+
+                    panel_w = lw + 10
+                    panel_x = x1
+                    panel_y = y1 - 25
+                    if panel_y < 0:
+                        panel_y = y1 + 10
+
+                    UIUtils.draw_glass_panel(annotated_frame, panel_x, panel_y, panel_w, 20, color=(0, 0, 0), alpha=0.5)
+                    cv2.putText(annotated_frame, label, (panel_x + 5, panel_y + 15), font, 0.5, Colors.TEXT_WHITE, 1, cv2.LINE_AA)
+
+            else:  # Vehicles (Car, Bus, Truck, etc.)
+
+                # Separation: Standing vs Moving Vehicles
+                if speed < 0.5:
+                    # Standing/Parked -> Subtle Grey
+                    # No Label, just subtle outline
+                    UIUtils.draw_rounded_rect(annotated_frame, (x1, y1), (x2, y2), (100, 100, 100), radius=5, thickness=1, alpha=0.3)
+                else:
+                    # Moving -> Red and Visible
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), Colors.ACCENT_RED, 2)
+
+                    # Determine Vehicle Label
+                    v_label = "FHRZG"
+                    if cls_id == 2:
+                        v_label = "AUTO"
+                    elif cls_id == 5:
+                        v_label = "BUS"
+                    elif cls_id == 7:
+                        v_label = "LKW"
+                    elif cls_id == 3:
+                        v_label = "KRAD"
+
+                    label = f"{v_label} | {speed:.1f} m/s"
+
+                    # Draw Top Label Panel
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    (lw, lh), _ = cv2.getTextSize(label, font, 0.6, 1)
+
+                    # Ensure panel doesn't go off screen
+                    panel_w = lw + 20
+                    panel_x = x1
+                    panel_y = y1 - 35
+                    if panel_y < 0:
+                        panel_y = y1 + 10  # Flip down if too high
+
+                    UIUtils.draw_glass_panel(annotated_frame, panel_x, panel_y, panel_w, 30, color=(0, 0, 0), alpha=0.6)
+                    cv2.putText(annotated_frame, label, (panel_x + 10, panel_y + 20), font, 0.6, Colors.TEXT_WHITE, 1, cv2.LINE_AA)
 
         # Zähle Personen (Rohdaten)
-        raw_count = len(results[0].boxes)
+        # Nur Personen zählen (class=0)
+        p_count = 0
+        if results[0].boxes.id is not None:
+            cls_list = results[0].boxes.cls.int().cpu().tolist()
+            p_count = cls_list.count(0)
+
+        raw_count = p_count
 
         # Glätte den Wert (Debouncing)
         smooth_count = smoother.update(raw_count)
