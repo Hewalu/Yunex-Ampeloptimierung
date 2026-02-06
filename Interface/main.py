@@ -48,14 +48,14 @@ ADD_LEDS_PER_PERSON = 1
 CROWD_BONUS_FACTOR = 0.3
 
 # 2. LED SETUP
-# Wir nutzen 21 Punkte für Grün.
-BASE_LEDS_GREEN = 21
+# Wir nutzen 25 Punkte für Grün (voller Ring).
+BASE_LEDS_GREEN = 25
 VISUAL_LED_COUNT = 25
 TOTAL_LEDS_RED = 25
 MAX_LEDS_LIMIT = 30
 
 # 3. GESCHWINDIGKEITEN
-SECONDS_PER_LED_RED = 1.0   # Wartezeit füllen
+SECONDS_PER_LED_RED = 0.20   # Wartezeit füllen
 SECONDS_PER_LED_GREEN = 0.333  # Normales Ablaufen
 SECONDS_PER_LED_GREEN_SLOW = 0.5    # Langsames Ablaufen (Taste)
 
@@ -308,7 +308,9 @@ def main():
 
                 if event.key == pygame.K_t:
                     debug_log("T-Taste gedrückt (Tram)!")
-                    if current_state == STATE_GREEN:
+                    if current_state == STATE_CLEARANCE:
+                         debug_log("Tram ignoriert: Räumzeit läuft.")
+                    elif current_state == STATE_GREEN:
                         # Wenn bereits GRÜN, dann Tram-Modus aktivieren und Zeit resetten (Verlängerung)
                         tram_active = True
                         debug_log("Tram während Grün! Verlängere Grünphase.")
@@ -372,7 +374,7 @@ def main():
             if len(esp.sensor_values) >= 8:
                 if esp.sensor_values[6] == 1 or esp.sensor_values[7] == 1:
                     # Nur Trigger wenn nicht schon im TRAM-Ablauf
-                    if not tram_active:
+                    if not tram_active and current_state != STATE_CLEARANCE:
                         debug_log("Tram erkannt (Sensor)!")
                         
                         if current_state == STATE_GREEN:

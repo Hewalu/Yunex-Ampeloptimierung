@@ -8,12 +8,12 @@ import numpy as np
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Gehe ein Verzeichnis hoch (zu image-detection) und dann in 'models'
 MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
-MODEL_NAME = "yolo26n.pt"
 
 INPUT_ROOT = os.path.join(BASE_DIR, "input")
 OUTPUT_ROOT = os.path.join(BASE_DIR, "output")
 
 # YOLO Model Configuration
+MODEL_NAME = "yolo12m.pt"
 CONF_THRESHOLD = 0.25   # Mindest-Wahrscheinlichkeit (0.0 - 1.0)
 IOU_THRESHOLD = 0.5     # Overlap Threshold für NMS (0.0 - 1.0)
 CLASSES = [0]           # Klassen-Filter: 0 = Person. None für alle Klassen.
@@ -139,7 +139,7 @@ if __name__ == "__main__":
         for root, dirs, files in os.walk(INPUT_ROOT):
             for file in files:
                 # Unterscheidung auf .mov case-insensitive
-                if file.lower().endswith(('.mp4')):
+                if file.lower().endswith(('.mov', '.mp4', '.avi', '.mkv')):
                     full_path = os.path.join(root, file)
                     video_files.append(full_path)
     else:

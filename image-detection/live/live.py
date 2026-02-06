@@ -11,6 +11,8 @@ MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
 MODEL_NAME = "yolo26n-seg.pt"
 
 DEBOUNCE_TIME = 0.25  # Reduziert auf 0.25 Sekunden
+MAX_VISUAL_PERSONS = 8
+waiting_images = []
 
 
 class CountSmoother:
@@ -37,15 +39,30 @@ class SpeedEstimator:
         # Dictionary to store tracking history: id -> {positions: [(ts, x, y, h)], last_speed: float}
         self.tracks = {}
         # Parameters
-        self.history_duration = 1.0  # Keep 1 second of history
-        self.speed_smooth_factor = 0.7  # EMA factor for speed
+        self.history_duration = 0.5  # Reduziert von 1.0 auf 0.5 für schnellere Reaktion
+        self.speed_smooth_factor = 0.5  # Reduziert für etwas mehr Dynamik
 
-    def update(self, results):
+        # Referenzwerte für Kalibrierung (vom User gegeben)
+        # Bildbreite entspricht 11m in der Realität
+        self.ref_width_units = 11.0
+        # Bildhöhe entspricht 19.5 Einheiten (wobei unten die 11m "Action Area" sind)
+        self.ref_height_units = 19.5 
+
+    def update(self, results, frame_shape):
         current_time = time.time()
         active_speeds = {}  # id -> {speed: float, category: str, direction: str, box: [x1, y1, x2, y2]}
 
-        if not results or not results[0].boxes.id is not None:
+        if not results or results[0].boxes.id is None:
             return active_speeds
+
+        # Bilddimensionen für Kalibrierung
+        h_frame, w_frame = frame_shape[:2]
+        
+        # Pixel pro Meter berechnen
+        # X-Achse: Bildbreite = 11m
+        px_per_m_x = w_frame / self.ref_width_units
+        # Y-Achse: Bildhöhe = 19.5 Einheiten -> 1 Einheit = 1 Meter (da Scale gleich bleibt)
+        px_per_m_y = h_frame / self.ref_height_units
 
         # Extract data from YOLO results
         track_ids = results[0].boxes.id.int().cpu().tolist()
@@ -78,58 +95,48 @@ class SpeedEstimator:
 
             positions = track_data['positions']
             if len(positions) > 1:
-                # Compare current with oldest in history (within window) for stability
-                # Using the oldest available point gives a smoother average over the window
+                # Compare current with oldest in history (within window)
                 t0, x0, y0, h0 = positions[0]
                 dt = current_time - t0
 
-                if dt > 0.1:  # Only calculate if we have a little bit of time passed
-                    dist_pixels = np.sqrt((cx - x0)**2 + (cy - y0)**2)
+                if dt > 0.05:  # Kleineres Zeitfenster zulassen
+                    
+                    # Distanz in X (Meter)
+                    dx_px = cx - x0
+                    dx_m = dx_px / px_per_m_x
+                    
+                    # Distanz in Y (Meter)
+                    dy_px = cy - y0
+                    dy_m = dy_px / px_per_m_y
+                    
+                    # Gesamtdistanz (Euklidisch in Metern)
+                    dist_meters = np.sqrt(dx_m**2 + dy_m**2)
+                    
+                    raw_speed = dist_meters / dt
 
-                    # Direction Calculation (Y-axis movement)
-                    # Y increases downwards.
-                    # cy > y0 -> Moving Down -> Incoming (Top of screen to Bottom)
-                    # cy < y0 -> Moving Up -> Outgoing (Bottom of screen to Top)
-                    # dy = cy - y0
-                    # if abs(dy) > 10: # Threshold to ignore jitter
-                    #     if dy > 0:
-                    #         direction = "INCOMING"
-                    #     else:
-                    #         direction = "OUTGOING"
+                    # Apply smoothing
+                    speed = (self.speed_smooth_factor * raw_speed) + \
+                            ((1 - self.speed_smooth_factor) * track_data['last_speed'])
 
-                    # track_data['last_direction'] = direction
-
-                    # Estimate scale: Assume average person is 1.7m tall
-                    # pixels_per_meter = height_in_pixels / 1.7
-                    avg_h = (h + h0) / 2
-                    if avg_h > 0:
-                        pixels_per_meter = avg_h / 1.7
-                        dist_meters = dist_pixels / pixels_per_meter
-                        raw_speed = dist_meters / dt
-
-                        # Apply smoothing
-                        speed = (self.speed_smooth_factor * raw_speed) + \
-                                ((1 - self.speed_smooth_factor) * track_data['last_speed'])
-
-            # Determine Direction based on Speed and Movement
-            if speed < 0.25:
+            # Determine Direction based on Speed and Movement (Y-Achse dominant für IN/OUT)
+            if speed < 0.2:
                 # If speed is very low, assume waiting
                 direction = "WAITING"
             else:
-                # Only update direction if moving fast enough
-                if direction == "WAITING":
-                    direction = "UNKNOWN"  # Reset if started moving
-
-                # Recalculate or use dy from above if available?
-                # To be clean, we should recalc dy here or use movement
                 if len(positions) > 1:
                     t0, x0, y0, h0 = positions[0]
-                    dy = cy - y0
-                    if abs(dy) > 10:
-                        if dy > 0:
-                            direction = "INCOMING"
+                    # Richtung anhand der Y-Bewegung bestimmen, sofern signifikant
+                    dy_total = cy - y0
+                    # Threshold: 10px Bewegung in Y nötig für klare Richtung
+                    if abs(dy_total) > 10:
+                        if dy_total > 0:
+                            direction = "INCOMING" # Y wird größer (oben -> unten)
                         else:
-                            direction = "OUTGOING"
+                            direction = "OUTGOING" # Y wird kleiner (unten -> oben)
+                    elif direction == "WAITING":
+                        # Wenn wir uns bewegen aber Y sich kaum ändert -> Seitwärtsbewegung?
+                        # Wir lassen es erstmal bei der alten Richtung oder UNKNOWN
+                        direction = "CROSSING"
 
             track_data['last_direction'] = direction
             track_data['last_speed'] = speed
@@ -293,6 +300,38 @@ class UIUtils:
             # Bottom-Right
             cv2.line(img, (x2, y2), (x2 - line_len, y2), color, thickness)
             cv2.line(img, (x2, y2), (x2, y2 - line_len), color, thickness)
+
+    @staticmethod
+    def overlay_image_alpha(img, img_overlay, pos):
+        """Overlay img_overlay on top of img at position pos (x,y) with alpha transparency."""
+        x, y = pos
+        
+        # Image ranges
+        y1, y2 = max(0, y), min(img.shape[0], y + img_overlay.shape[0])
+        x1, x2 = max(0, x), min(img.shape[1], x + img_overlay.shape[1])
+        
+        # Overlay ranges
+        y1o, y2o = max(0, -y), min(img_overlay.shape[0], img.shape[0] - y)
+        x1o, x2o = max(0, -x), min(img_overlay.shape[1], img.shape[1] - x)
+        
+        # Exit if nothing to do
+        if y1 >= y2 or x1 >= x2 or y1o >= y2o or x1o >= x2o:
+            return
+
+        channels = img.shape[2]
+        alpha_channels = img_overlay.shape[2]
+        
+        if alpha_channels < 4:
+            # No alpha channel in overlay, just copy
+            img[y1:y2, x1:x2] = img_overlay[y1o:y2o, x1o:x2o]
+            return
+
+        alpha_mask = img_overlay[y1o:y2o, x1o:x2o, 3] / 255.0
+        alpha_inv = 1.0 - alpha_mask
+        
+        for c in range(3):
+            img[y1:y2, x1:x2, c] = (alpha_mask * img_overlay[y1o:y2o, x1o:x2o, c] + 
+                                    alpha_inv * img[y1:y2, x1:x2, c])
 
         # Label with glass background
         if label:
@@ -498,7 +537,25 @@ def main(args):
                     pass
 
         # Update Speed Estimation
-        speeds = speed_estimator.update(results)
+        speeds = speed_estimator.update(results, annotated_frame.shape)
+        
+        # Zeichne ROI Box (Messbereich)
+        # 1 Einheit = 1 Meter. Bereich ist Top-of-ROI bis Bottom-of-Screen.
+        # Height of ROI is 11m. Total Height is 19.5m.
+        # Top Y in pixels = h - (h * (11 / 19.5))
+        h_frame, w_frame = annotated_frame.shape[:2]
+        roi_height_px = int(h_frame * (11.0 / 19.5))
+        roi_top_y = h_frame - roi_height_px
+        
+        # Zeichne semi-transparentes Rechteck für den Messbereich
+        # overlay = annotated_frame.copy()
+        # cv2.rectangle(overlay, (0, roi_top_y), (w_frame, h_frame), (0, 255, 0), -1)
+        # cv2.addWeighted(overlay, 0.1, annotated_frame, 0.9, 0, annotated_frame)
+        
+        # ODER nur einen dezenten Rahmen / Linie
+        cv2.line(annotated_frame, (0, roi_top_y), (w_frame, roi_top_y), (0, 255, 100), 1, cv2.LINE_AA)
+        cv2.putText(annotated_frame, "ACTIVE MEASUREMENT ZONE (11m)", (10, roi_top_y - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 100), 1, cv2.LINE_AA)
 
         # 2. Zeichne HUD Overlays (Vordergrund/Ecken)
         for track_id, data in speeds.items():

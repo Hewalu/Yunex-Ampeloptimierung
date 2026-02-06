@@ -5,3 +5,5 @@ yolo11x.pt
 yolo11n-seg.pt
 .DS_Store
 output/
+build/
+dist/

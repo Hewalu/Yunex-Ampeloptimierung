@@ -12,6 +12,7 @@ class ESPController:
         self.sensor_values = [0] * 8  # Status der 8 Sensoren
         self.button_pressed = False
         self.button2_pressed = False
+        self.tram_triggered = False  # Latched: wird True sobald Sensor 6 oder 7 eine 1 liefert
 
     def connect(self):
         """Verbindet mit dem ESP32 über Serial."""
@@ -71,6 +72,9 @@ class ESPController:
                     if len(parts) >= 9:
                         vals = [int(p) for p in parts[1:9]]
                         self.sensor_values = vals
+                        # Tram-Sensoren (6+7): Peak latchen – jede 1 merken
+                        if vals[6] == 1 or vals[7] == 1:
+                            self.tram_triggered = True
                         # Nur die ersten 6 Sensoren (Ampeln) zählen zur Personenanzahl
                         last_count = sum(vals[:6])
 
